@@ -13,6 +13,11 @@ import { join } from "path";
 export class StockWatchAppStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
+
+    const dataTable = new DataTable(this, "DataTable");
+    new SymbolsRegistry(this, "SymbolsRegistry", {
+      dataTable: dataTable.table
+    });
   }
 }
 
@@ -30,7 +35,10 @@ class SymbolsRegistry extends Construct {
   constructor(scope: Construct, id: string, props: SymbolsRegistryProps) {
     super(scope, id);
 
-    const functionEntry = join(__dirname, "../src/functions/symbols_registry");
+    const functionEntry = join(
+      __dirname,
+      "../../src/functions/symbols_registry"
+    );
     const symbolsRegistryFunction = new LambdaGo.GoFunction(
       this,
       "SymbolsRegistryFunction",
@@ -47,6 +55,12 @@ class SymbolsRegistry extends Construct {
       }
     );
 
+    const symbols = [
+      { name: "Apple", symbol: "AAPL" },
+      { name: "Google", symbol: "GOOG" },
+      { name: "Microsoft", symbol: "MSFT" }
+    ];
+
     const symbolsRegistryResource = new CustomResource(
       this,
       "SymbolsRegistryResource",
@@ -54,12 +68,7 @@ class SymbolsRegistry extends Construct {
         serviceToken: symbolsRegistryProvider.serviceToken,
         properties: {
           TableName: props.dataTable.tableName,
-          Symbols: [
-            { Name: "Apple", Symbol: "AAPL" },
-            { Name: "Google", Symbol: "GOOG" },
-            { Name: "Microsoft", Symbol: "MSFT" },
-            { Name: "Facebook", Symbol: "FB" }
-          ]
+          Symbols: JSON.stringify(symbols)
         }
       }
     );

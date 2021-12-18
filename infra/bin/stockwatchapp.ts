@@ -7,5 +7,8 @@ new StockWatchAppStack(app, "StockWatchApp", {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION
-  }
+  },
+  synthesizer: new cdk.DefaultStackSynthesizer({
+    qualifier: "stockwatch"
+  })
 });
