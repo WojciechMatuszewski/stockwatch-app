@@ -44,7 +44,7 @@ class SymbolDataFetcher extends Construct {
     this.api = new aws_apigateway.RestApi(this, "API");
     // https://finnhub.io/api/v1/quote?symbol=AAPL&token=c6uv32aad3i9k7i70shg
     const integration = new aws_apigateway.HttpIntegration(
-      "https://finnhub.io/api/v1/stock/candle",
+      "https://finnhub.io/api/v1/crypto/candle",
       {
         options: {
           requestParameters: {
@@ -56,10 +56,11 @@ class SymbolDataFetcher extends Construct {
           // TODO: Add support for variable resolution parameter.
           requestTemplates: {
             "application/json": `
-              #set ( $minuteBeforeNow = $context.requestTimeEpoch - 60 )
+              #set ( $requestTimeEpochInSeconds = $context.requestTimeEpoch / 1000)
+              #set ( $minuteBeforeNow = $requestTimeEpochInSeconds - 60 )
               #set ( $context.requestOverride.querystring.resolution = "1" )
               #set ( $context.requestOverride.querystring.from = "$minuteBeforeNow" )
-              #set ( $context.requestOverride.querystring.to = "$context.requestTimeEpoch" )
+              #set ( $context.requestOverride.querystring.to = "$requestTimeEpochInSeconds" )
             `
           },
           connectionType: aws_apigateway.ConnectionType.INTERNET,
@@ -96,9 +97,6 @@ class SymbolDataFetcher extends Construct {
       requestParameters: {
         "method.request.querystring.symbol": true,
         "method.request.querystring.token": true
-        // "method.request.querystring.from": true,
-        // "method.request.querystring.to": true,
-        // "method.request.querystring.resolution": true
       },
       apiKeyRequired: false,
       authorizationType: aws_apigateway.AuthorizationType.NONE,
@@ -141,9 +139,8 @@ class SymbolsRegistry extends Construct {
     );
 
     const symbols = [
-      { name: "Apple", symbol: "AAPL" },
-      { name: "Google", symbol: "GOOG" },
-      { name: "Microsoft", symbol: "MSFT" }
+      { name: "BTC", symbol: "BINANCE:BTCUSDT" },
+      { name: "ETH", symbol: "BINANCE:ETHUSDT" }
     ];
 
     const symbolsRegistryResource = new CustomResource(
