@@ -51,12 +51,16 @@ class SymbolDataFetcher extends Construct {
             "integration.request.querystring.symbol":
               "method.request.querystring.symbol",
             "integration.request.querystring.token":
-              "method.request.querystring.token",
-            "integration.request.querystring.from":
-              "method.request.querystring.from",
-            "integration.request.querystring.to":
-              "method.request.querystring.to",
-            "integration.request.querystring.resolution": "'1'"
+              "method.request.querystring.token"
+          },
+          // TODO: Add support for variable resolution parameter.
+          requestTemplates: {
+            "application/json": `
+              #set ( $minuteBeforeNow = $context.requestTimeEpoch - 60 )
+              #set ( $context.requestOverride.querystring.resolution = "1" )
+              #set ( $context.requestOverride.querystring.from = "$minuteBeforeNow" )
+              #set ( $context.requestOverride.querystring.to = "$context.requestTimeEpoch" )
+            `
           },
           connectionType: aws_apigateway.ConnectionType.INTERNET,
           /*
@@ -91,10 +95,10 @@ class SymbolDataFetcher extends Construct {
        */
       requestParameters: {
         "method.request.querystring.symbol": true,
-        "method.request.querystring.token": true,
-        "method.request.querystring.from": true,
-        "method.request.querystring.to": true,
-        "method.request.querystring.resolution": true
+        "method.request.querystring.token": true
+        // "method.request.querystring.from": true,
+        // "method.request.querystring.to": true,
+        // "method.request.querystring.resolution": true
       },
       apiKeyRequired: false,
       authorizationType: aws_apigateway.AuthorizationType.NONE,
