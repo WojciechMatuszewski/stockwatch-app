@@ -3,7 +3,9 @@ import {
   CustomResource,
   custom_resources,
   Stack,
-  StackProps
+  StackProps,
+  aws_apigateway,
+  CfnOutput
 } from "aws-cdk-lib";
 import * as LambdaGo from "@aws-cdk/aws-lambda-go-alpha";
 import { BillingMode, ITable } from "aws-cdk-lib/aws-dynamodb";
@@ -18,12 +20,90 @@ export class StockWatchAppStack extends Stack {
     new SymbolsRegistry(this, "SymbolsRegistry", {
       dataTable: dataTable.table
     });
+
+    const symbolDataFetcher = new SymbolDataFetcher(this, "SymbolDataFetcher");
+
+    new CfnOutput(this, "SymbolDataFetcherURL", {
+      value: symbolDataFetcher.api.url
+    });
   }
 }
 
 class SymbolsOrchestrator extends Construct {
   constructor(scope: Construct, id: string) {
     super(scope, id);
+  }
+}
+
+class SymbolDataFetcher extends Construct {
+  public api: aws_apigateway.RestApi;
+
+  constructor(scope: Construct, id: string) {
+    super(scope, id);
+
+    this.api = new aws_apigateway.RestApi(this, "API");
+    // https://finnhub.io/api/v1/quote?symbol=AAPL&token=c6uv32aad3i9k7i70shg
+    const integration = new aws_apigateway.HttpIntegration(
+      "https://finnhub.io/api/v1/stock/candle",
+      {
+        options: {
+          requestParameters: {
+            "integration.request.querystring.symbol":
+              "method.request.querystring.symbol",
+            "integration.request.querystring.token":
+              "method.request.querystring.token",
+            "integration.request.querystring.from":
+              "method.request.querystring.from",
+            "integration.request.querystring.to":
+              "method.request.querystring.to",
+            "integration.request.querystring.resolution": "'1'"
+          },
+          connectionType: aws_apigateway.ConnectionType.INTERNET,
+          /*
+           * These have to be hardcoded.
+           * There is no way to get the statusCode via VTL.
+           * If we could do that, one might override the statusCode using this guide: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-override-request-response-parameters.html
+           */
+          integrationResponses: [
+            {
+              selectionPattern: "2\\d{2}",
+              statusCode: "200"
+            },
+            {
+              selectionPattern: "4\\d{2}",
+              statusCode: "400"
+            },
+            {
+              selectionPattern: "5\\d{2}",
+              statusCode: "500"
+            }
+          ]
+        },
+        httpMethod: "GET",
+        proxy: false
+      }
+    );
+
+    this.api.root.addMethod("GET", integration, {
+      /**
+       * These allow you to specify the `requestParameters` in the integration.
+       * If you don't specify them, the integration will not be created and you will get an error.
+       */
+      requestParameters: {
+        "method.request.querystring.symbol": true,
+        "method.request.querystring.token": true,
+        "method.request.querystring.from": true,
+        "method.request.querystring.to": true,
+        "method.request.querystring.resolution": true
+      },
+      apiKeyRequired: false,
+      authorizationType: aws_apigateway.AuthorizationType.NONE,
+      methodResponses: [
+        { statusCode: "200" },
+        { statusCode: "400" },
+        { statusCode: "500" }
+      ]
+    });
   }
 }
 
@@ -46,6 +126,7 @@ class SymbolsRegistry extends Construct {
         entry: functionEntry
       }
     );
+    props.dataTable.grantWriteData(symbolsRegistryFunction);
 
     const symbolsRegistryProvider = new custom_resources.Provider(
       this,

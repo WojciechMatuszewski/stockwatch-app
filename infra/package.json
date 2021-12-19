@@ -9,8 +9,8 @@
     "watch": "tsc -w",
     "test": "jest",
     "cdk": "cdk",
-    "deploy": "npm run cdk deploy -- --hotswap",
-    "bootstrap": "npm run cdk bootstrap -- --qualifier stockwatch"
+    "deploy": "npm run cdk deploy -- --hotswap --require--approval never",
+    "bootstrap": "npm run cdk bootstrap"
   },
   "devDependencies": {
     "@aws-cdk/aws-amplify-alpha": "2.2.0-alpha.0",

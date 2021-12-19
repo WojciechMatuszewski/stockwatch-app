@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/aws/aws-lambda-go/cfn"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -27,21 +26,20 @@ func newHandler() cfn.CustomResourceFunction {
 		tableName, found := event.ResourceProperties["TableName"].(string)
 		if !found {
 			err = errors.New("TableName is required")
-			return physicalResourceID, data, err
+			panic(err)
 		}
 
 		rawSymbols, found := event.ResourceProperties["Symbols"].(string)
 		if !found {
 			err = errors.New("symbols are required")
-			return physicalResourceID, data, err
+			panic(err)
 		}
 
 		var symbols []SymbolData
 		err = json.Unmarshal([]byte(rawSymbols), &symbols)
 		if err != nil {
-			fmt.Println(err)
 			err = errors.New("failed to unmarshal symbols")
-			return physicalResourceID, data, err
+			panic(err)
 		}
 
 		cfg, err := config.LoadDefaultConfig(ctx)
@@ -58,8 +56,8 @@ func newHandler() cfn.CustomResourceFunction {
 		*/
 
 		symbolsWriteRequests := make([]dynamodbtypes.WriteRequest, len(symbols))
-		for _, symbol := range symbols {
-			symbolsWriteRequests = append(symbolsWriteRequests, dynamodbtypes.WriteRequest{
+		for i, symbol := range symbols {
+			symbolWriteRequest := dynamodbtypes.WriteRequest{
 				PutRequest: &dynamodbtypes.PutRequest{
 					Item: map[string]dynamodbtypes.AttributeValue{
 						"PK": &dynamodbtypes.AttributeValueMemberS{
@@ -73,16 +71,21 @@ func newHandler() cfn.CustomResourceFunction {
 						},
 					},
 				},
-			})
+			}
+			symbolsWriteRequests[i] = symbolWriteRequest
 		}
 
-		_, err = ddb.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
+		out, err := ddb.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
 			RequestItems: map[string][]dynamodbtypes.WriteRequest{
 				tableName: symbolsWriteRequests,
 			},
 		})
 		if err != nil {
 			panic(err)
+		}
+
+		if len(out.UnprocessedItems) > 0 {
+			panic("unprocessed items")
 		}
 
 		return physicalResourceID, data, err
