@@ -36,3 +36,6 @@ https://finnhub.io/
     "$context.requestTimeEpoch" // OK
     "$context.requestTimeEpoch - 60" // "123456 + - 60" // WTF :D
     ```
+
+- With the _SDK Integrations_ we can **finally use DynamoDB `Query` operation within the _StepFunctions_**!
+  - This is great news, you no longer have to write a lambda function to that operation.

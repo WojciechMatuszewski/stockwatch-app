@@ -5,7 +5,9 @@ import {
   Stack,
   StackProps,
   aws_apigateway,
-  CfnOutput
+  CfnOutput,
+  aws_stepfunctions,
+  aws_stepfunctions_tasks
 } from "aws-cdk-lib";
 import * as LambdaGo from "@aws-cdk/aws-lambda-go-alpha";
 import { BillingMode, ITable } from "aws-cdk-lib/aws-dynamodb";
@@ -23,15 +25,80 @@ export class StockWatchAppStack extends Stack {
 
     const symbolDataFetcher = new SymbolDataFetcher(this, "SymbolDataFetcher");
 
+    new SymbolsOrchestrator(this, "SymbolsOrchestrator", {
+      dataTable: dataTable.table,
+      symbolDataFetcher: symbolDataFetcher.api
+    });
+
     new CfnOutput(this, "SymbolDataFetcherURL", {
       value: symbolDataFetcher.api.url
     });
   }
 }
 
+interface SymbolsOrchestratorProps {
+  dataTable: aws_dynamodb.ITable;
+  symbolDataFetcher: aws_apigateway.RestApi;
+}
+
 class SymbolsOrchestrator extends Construct {
-  constructor(scope: Construct, id: string) {
+  constructor(scope: Construct, id: string, props: SymbolsOrchestratorProps) {
     super(scope, id);
+
+    const fetchSymbolsTask = new aws_stepfunctions_tasks.CallAwsService(
+      this,
+      "FetchSymbolsTask",
+      {
+        service: "dynamodb",
+        action: "query",
+        parameters: {
+          TableName: props.dataTable.tableName,
+          KeyConditionExpression: "#PK = :PK",
+          ExpressionAttributeValues: {
+            ":PK": {
+              S: "SYMBOL"
+            }
+          },
+          ExpressionAttributeNames: {
+            "#PK": "PK"
+          }
+        },
+        // outputPath: "$",
+        // resultPath: "$.Items",
+        resultSelector: {
+          "symbols.$": "$.Items"
+        },
+        iamResources: [props.dataTable.tableArn]
+      }
+    );
+
+    const fetchPriceForSymbolTask =
+      new aws_stepfunctions_tasks.CallApiGatewayRestApiEndpoint(
+        this,
+        "FetchPriceForSymbolTask",
+        {
+          api: props.symbolDataFetcher,
+          stageName: "prod",
+          method: aws_stepfunctions_tasks.HttpMethod.GET,
+          // queryParameters: aws_stepfunctions.TaskInput.fromObject({
+          //   "symbol.$": "$.symbols.[0].SK.S",
+          //   token: "c6uv32aad3i9k7i70shg"
+          // })
+          /**
+           * How do I make the query parameters to work?
+           * "An error occurred while executing the state 'FetchPriceForSymbolTask' (entered at the event id #7). The Parameters '{\"ApiEndpoint\":\"b9tu9lkwh6.execute-api.us-east-1.amazonaws.com\",\"Method\":\"GET\",\"Stage\":\"prod\",\"AuthType\":\"NO_AUTH\",\"QueryParameters\":\"?symbol=BINANCE:BTCUSDT&token=c6uv32aad3i9k7i70shg\"}' could not be used to start the Task: [The value of the field 'QueryParameters' has an invalid format]"
+           */
+          queryParameters: aws_stepfunctions.TaskInput.fromJsonPathAt(
+            "States.Format('?symbol={}&token={}', $.symbols[0].SK.S, 'c6uv32aad3i9k7i70shg')"
+          )
+        }
+      );
+
+    const machineDefinition = fetchSymbolsTask.next(fetchPriceForSymbolTask);
+
+    const machine = new aws_stepfunctions.StateMachine(this, "Machine", {
+      definition: machineDefinition
+    });
   }
 }
 
