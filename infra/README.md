@@ -38,4 +38,22 @@ https://finnhub.io/
     ```
 
 - With the _SDK Integrations_ we can **finally use DynamoDB `Query` operation within the _StepFunctions_**!
+
   - This is great news, you no longer have to write a lambda function to that operation.
+
+- The _APIGW StepFunctions optimized_ integration **requires arrays as properties for `QueryParameters`**. It is not mentioned in the docs anywhere!
+
+  - With the array requirement, how one can use the _JSONPath_ and the `States.Format` ?
+  - Here is what I came up with:
+
+    ```text
+    "symbol.$": "States.StringToJson(States.Format('[\"{}\"]', $.symbols[0].SK.S))"
+
+    ```
+
+- The _APIGW StepFunctions optimized_ integration **does not support the `parameters` (_StepFunctions_) property**. This makes it hard to format the results correctly.
+
+  - If you use `resultSelector` and `resultPath` you will end up with nested object. :C
+
+- The `DynamoAttributeValue.fromNumber` in _StepFunctions_ is **broken**!
+  - https://github.com/aws/aws-cdk/issues/12456

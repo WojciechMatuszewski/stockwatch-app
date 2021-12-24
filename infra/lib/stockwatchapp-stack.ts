@@ -63,14 +63,23 @@ class SymbolsOrchestrator extends Construct {
             "#PK": "PK"
           }
         },
-        // outputPath: "$",
-        // resultPath: "$.Items",
         resultSelector: {
           "symbols.$": "$.Items"
         },
         iamResources: [props.dataTable.tableArn]
       }
     );
+
+    const symbolMapper = new aws_stepfunctions.Pass(this, "SymbolMapper", {
+      parameters: {
+        "symbol.$": "$.SK.S",
+        "name.$": "$.Name.S"
+      }
+    });
+    const mapSymbols = new aws_stepfunctions.Map(this, "MapSymbols", {
+      itemsPath: "$.symbols",
+      resultPath: "$.symbols"
+    }).iterator(symbolMapper);
 
     const fetchPriceForSymbolTask =
       new aws_stepfunctions_tasks.CallApiGatewayRestApiEndpoint(
@@ -80,28 +89,62 @@ class SymbolsOrchestrator extends Construct {
           api: props.symbolDataFetcher,
           stageName: "prod",
           method: aws_stepfunctions_tasks.HttpMethod.GET,
-          // queryParameters: aws_stepfunctions.TaskInput.fromObject({
-          //   "symbol.$": "$.symbols.[0].SK.S",
-          //   token: "c6uv32aad3i9k7i70shg"
-          // })
-          /**
-           * How do I make the query parameters to work?
-           * "An error occurred while executing the state 'FetchPriceForSymbolTask' (entered at the event id #7). The Parameters '{\"ApiEndpoint\":\"b9tu9lkwh6.execute-api.us-east-1.amazonaws.com\",\"Method\":\"GET\",\"Stage\":\"prod\",\"AuthType\":\"NO_AUTH\",\"QueryParameters\":\"?symbol=BINANCE:BTCUSDT&token=c6uv32aad3i9k7i70shg\"}' could not be used to start the Task: [The value of the field 'QueryParameters' has an invalid format]"
-           */
-          queryParameters: aws_stepfunctions.TaskInput.fromJsonPathAt(
-            "States.Format('?symbol={}&token={}', $.symbols[0].SK.S, 'c6uv32aad3i9k7i70shg')"
-          )
+          queryParameters: aws_stepfunctions.TaskInput.fromObject({
+            "symbol.$":
+              "States.StringToJson(States.Format('[\"{}\"]', $.symbol))",
+            token: ["c6uv32aad3i9k7i70shg"]
+          }),
+          resultSelector: {
+            "price.$": "$.ResponseBody.c[(@.length - 1)]"
+          },
+          resultPath: "$.price"
         }
       );
 
-    const machineDefinition = fetchSymbolsTask.next(fetchPriceForSymbolTask);
+    const mapToSymbolPrices = new aws_stepfunctions.Map(
+      this,
+      "FetchPriceForSymbolMapper",
+      {
+        itemsPath: "$.symbols",
+        maxConcurrency: 1
+      }
+    ).iterator(fetchPriceForSymbolTask);
+
+    const savePriceTask = new aws_stepfunctions_tasks.DynamoPutItem(
+      this,
+      "SavePriceTask",
+      {
+        table: props.dataTable,
+        item: {
+          PK: aws_stepfunctions_tasks.DynamoAttributeValue.fromString("PRICE"),
+          SK: aws_stepfunctions_tasks.DynamoAttributeValue.fromString(
+            aws_stepfunctions.JsonPath.stringAt("$.symbol")
+          ),
+          /**
+           * How does DynamoDB store numbers? Should we use string here?
+           * "Number overflow. Attempting to store a number with magnitude larger than supported range (Service: AmazonDynamoDBv2; Status Code: 400; Error Code: ValidationException; Request ID: 53985e02-76f3-4339-83c3-271ce0573d65; Proxy: null)"
+           * https://github.com/aws/aws-cdk/issues/12456
+           */
+          Price: aws_stepfunctions_tasks.DynamoAttributeValue.fromNumber(
+            aws_stepfunctions.JsonPath.numberAt("$.price.price")
+          )
+        }
+      }
+    );
+    const savePrices = new aws_stepfunctions.Map(this, "SavePrices", {
+      itemsPath: "$"
+    }).iterator(savePriceTask);
+
+    const machineDefinition = fetchSymbolsTask
+      .next(mapSymbols)
+      .next(mapToSymbolPrices)
+      .next(savePrices);
 
     const machine = new aws_stepfunctions.StateMachine(this, "Machine", {
       definition: machineDefinition
     });
   }
 }
-
 class SymbolDataFetcher extends Construct {
   public api: aws_apigateway.RestApi;
 
