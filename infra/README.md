@@ -56,4 +56,10 @@ https://finnhub.io/
   - If you use `resultSelector` and `resultPath` you will end up with nested object. :C
 
 - The `DynamoAttributeValue.fromNumber` in _StepFunctions_ is **broken**!
-  - https://github.com/aws/aws-cdk/issues/12456
+
+  - See [this issue](https://github.com/aws/aws-cdk/issues/12456) for more details
+
+- The new _event source mappings_ filtering capabilities are not supported in L2 Lambda CDK constructs.
+  - You either have to use the `CfnEventSourceMapping` or [add a manual override as per this blog post](https://medium.com/@philipzeh/event-filtering-for-lambda-functions-using-aws-cdk-d332140590f8).
+  - The filtering capabilities are neat! And the supported syntax is the same as _EventBridge_.
+  - You can learn a bit more about the technology behind the filtering by reading [this blog post](https://www.tbray.org/ongoing/When/202x/2021/12/03/Filtering-Lessons).

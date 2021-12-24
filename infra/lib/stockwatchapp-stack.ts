@@ -1,15 +1,17 @@
+import * as LambdaGo from "@aws-cdk/aws-lambda-go-alpha";
 import {
+  aws_apigateway,
   aws_dynamodb,
+  aws_events,
+  aws_lambda,
+  aws_stepfunctions,
+  aws_stepfunctions_tasks,
+  CfnOutput,
   CustomResource,
   custom_resources,
   Stack,
-  StackProps,
-  aws_apigateway,
-  CfnOutput,
-  aws_stepfunctions,
-  aws_stepfunctions_tasks
+  StackProps
 } from "aws-cdk-lib";
-import * as LambdaGo from "@aws-cdk/aws-lambda-go-alpha";
 import { BillingMode, ITable } from "aws-cdk-lib/aws-dynamodb";
 import { Construct } from "constructs";
 import { join } from "path";
@@ -28,6 +30,10 @@ export class StockWatchAppStack extends Stack {
     new SymbolsOrchestrator(this, "SymbolsOrchestrator", {
       dataTable: dataTable.table,
       symbolDataFetcher: symbolDataFetcher.api
+    });
+
+    new SymbolsPriceDeltaSetter(this, "SymbolsPriceDeltaSetter", {
+      dataTable: dataTable.table
     });
 
     new CfnOutput(this, "SymbolDataFetcherURL", {
@@ -125,8 +131,10 @@ class SymbolsOrchestrator extends Construct {
            * "Number overflow. Attempting to store a number with magnitude larger than supported range (Service: AmazonDynamoDBv2; Status Code: 400; Error Code: ValidationException; Request ID: 53985e02-76f3-4339-83c3-271ce0573d65; Proxy: null)"
            * https://github.com/aws/aws-cdk/issues/12456
            */
-          Price: aws_stepfunctions_tasks.DynamoAttributeValue.fromNumber(
-            aws_stepfunctions.JsonPath.numberAt("$.price.price")
+          Price: aws_stepfunctions_tasks.DynamoAttributeValue.numberFromString(
+            aws_stepfunctions.JsonPath.stringAt(
+              "States.Format('{}', $.price.price)"
+            )
           )
         }
       }
@@ -219,6 +227,109 @@ class SymbolDataFetcher extends Construct {
   }
 }
 
+interface SymbolsPriceDeltaSetterProps {
+  dataTable: ITable;
+}
+class SymbolsPriceDeltaSetter extends Construct {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: SymbolsPriceDeltaSetterProps
+  ) {
+    super(scope, id);
+
+    const functionEntry = join(
+      __dirname,
+      "../../src/functions/symbols_price_delta"
+    );
+    const symbolsPriceDeltaFunction = new LambdaGo.GoFunction(
+      this,
+      "SymbolsPriceDeltaFunction",
+      {
+        entry: functionEntry,
+        environment: {
+          TABLE_NAME: props.dataTable.tableName
+        }
+      }
+    );
+    props.dataTable.grantWriteData(symbolsPriceDeltaFunction);
+    props.dataTable.grantStreamRead(symbolsPriceDeltaFunction);
+
+    const ESM = new aws_lambda.CfnEventSourceMapping(
+      this,
+      "SymbolsPriceDeltaEventSourceMapping",
+      {
+        functionName: symbolsPriceDeltaFunction.functionName,
+        eventSourceArn: props.dataTable.tableStreamArn,
+        startingPosition: "LATEST",
+        filterCriteria: {
+          Filters: [
+            {
+              Pattern:
+                '{"eventName": ["MODIFY", "INSERT"],"dynamodb": {"NewImage": {"PK": {"S": ["PRICE"]}}}}'
+            }
+          ]
+        },
+        maximumRetryAttempts: 1,
+        batchSize: 10,
+        functionResponseTypes: ["ReportBatchItemFailures"],
+        maximumBatchingWindowInSeconds: 5
+      }
+    );
+  }
+}
+
+interface SymbolsPriceDeltaEventSenderProps {
+  dataTable: ITable;
+}
+class SymbolsPriceDeltaEventSender extends Construct {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: SymbolsPriceDeltaEventSenderProps
+  ) {
+    super(scope, id);
+
+    const functionEntry = join(
+      __dirname,
+      "../../src/functions/symbols_price_delta_event_sender"
+    );
+    const symbolsPriceDeltaEventSenderFunction = new LambdaGo.GoFunction(
+      this,
+      "SymbolsPriceDeltaEventSenderFunction",
+      {
+        entry: functionEntry,
+        environment: {
+          TABLE_NAME: props.dataTable.tableName
+        }
+      }
+    );
+    props.dataTable.grantStreamRead(symbolsPriceDeltaEventSenderFunction);
+
+    const ESM = new aws_lambda.CfnEventSourceMapping(
+      this,
+      "SymbolsPriceDeltaEventSenderEventSourceMapping",
+      {
+        functionName: symbolsPriceDeltaEventSenderFunction.functionName,
+        eventSourceArn: props.dataTable.tableStreamArn,
+        startingPosition: "LATEST",
+        filterCriteria: {
+          Filters: [
+            {
+              Pattern:
+                '{"eventName": ["MODIFY", "INSERT"],"dynamodb": {"NewImage": {"PK": {"S": ["DELTA"]}}}}'
+            }
+          ]
+        },
+        maximumRetryAttempts: 1,
+        batchSize: 10,
+        functionResponseTypes: ["ReportBatchItemFailures"],
+        maximumBatchingWindowInSeconds: 5
+      }
+    );
+  }
+}
+
 interface SymbolsRegistryProps {
   dataTable: ITable;
 }
@@ -276,7 +387,8 @@ class DataTable extends Construct {
     this.table = new aws_dynamodb.Table(this, "DataTable", {
       partitionKey: { name: "PK", type: aws_dynamodb.AttributeType.STRING },
       sortKey: { name: "SK", type: aws_dynamodb.AttributeType.STRING },
-      billingMode: BillingMode.PAY_PER_REQUEST
+      billingMode: BillingMode.PAY_PER_REQUEST,
+      stream: aws_dynamodb.StreamViewType.NEW_AND_OLD_IMAGES
     });
   }
 }
