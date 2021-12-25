@@ -7,7 +7,11 @@ import {
   aws_events_targets,
   aws_iam,
   aws_lambda,
+  aws_lambda_event_sources,
   aws_logs,
+  aws_sns,
+  aws_sns_subscriptions,
+  aws_sqs,
   aws_ssm,
   aws_stepfunctions,
   aws_stepfunctions_tasks,
@@ -186,11 +190,6 @@ class SymbolsPriceOrchestrator extends Construct {
           SK: aws_stepfunctions_tasks.DynamoAttributeValue.fromString(
             aws_stepfunctions.JsonPath.stringAt("$.symbolItem.symbol")
           ),
-          /**
-           * How does DynamoDB store numbers? Should we use string here?
-           * "Number overflow. Attempting to store a number with magnitude larger than supported range (Service: AmazonDynamoDBv2; Status Code: 400; Error Code: ValidationException; Request ID: 53985e02-76f3-4339-83c3-271ce0573d65; Proxy: null)"
-           * https://github.com/aws/aws-cdk/issues/12456
-           */
           Price: aws_stepfunctions_tasks.DynamoAttributeValue.numberFromString(
             aws_stepfunctions.JsonPath.stringAt(
               "States.Format('{}', $.symbolItem.price.price)"
@@ -229,7 +228,6 @@ class SymbolDataFetcher extends Construct {
     super(scope, id);
 
     this.api = new aws_apigateway.RestApi(this, "API");
-    // https://finnhub.io/api/v1/quote?symbol=AAPL&token=c6uv32aad3i9k7i70shg
     const integration = new aws_apigateway.HttpIntegration(
       "https://finnhub.io/api/v1/crypto/candle",
       {
@@ -240,7 +238,7 @@ class SymbolDataFetcher extends Construct {
             "integration.request.querystring.token":
               "method.request.querystring.token"
           },
-          // TODO: Add support for variable resolution parameter.
+          // You might want to add support for different resolutions based on the query parameters.
           requestTemplates: {
             "application/json": `
               #set ( $requestTimeEpochInSeconds = $context.requestTimeEpoch / 1000)
@@ -358,7 +356,7 @@ class SymbolsPriceEventSender extends Construct {
   ) {
     super(scope, id);
 
-    const functionEntry = join(
+    const symbolsPriceDeltaEventSenderFunctionPath = join(
       __dirname,
       "../../src/functions/symbols_price_event_sender"
     );
@@ -366,7 +364,7 @@ class SymbolsPriceEventSender extends Construct {
       this,
       "SymbolsPriceEventSenderFunction",
       {
-        entry: functionEntry,
+        entry: symbolsPriceDeltaEventSenderFunctionPath,
         environment: {
           TABLE_NAME: props.dataTable.tableName
         }
@@ -409,22 +407,47 @@ class SymbolsPriceEventSender extends Construct {
       }
     );
 
-    const logGroupTarget = new aws_logs.LogGroup(
+    const symbolsPriceEventsDispatchQueue = new aws_sqs.Queue(
       this,
-      "SymbolsPriceEventDestinationLogGroup",
-      {
-        retention: aws_logs.RetentionDays.ONE_DAY,
-        removalPolicy: RemovalPolicy.DESTROY
-      }
+      "SymbolsPriceEventsDispatchQueue"
     );
-    new aws_events.Rule(this, "SymbolsPriceEventRule", {
-      enabled: true,
-      ruleName: "AllEvents",
-      targets: [new aws_events_targets.CloudWatchLogGroup(logGroupTarget)],
+
+    new aws_events.Rule(this, "SymbolsPriceEventsRule", {
+      // Does not work, the rule name has to adhere to a pattern
+      ruleName: "wm.matuszewski@gmail.com",
+      targets: [
+        new aws_events_targets.SqsQueue(symbolsPriceEventsDispatchQueue, {
+          message: aws_events.RuleTargetInput.fromObject({
+            email: aws_events.EventField.fromPath("aws.events.rule-name"),
+            event: aws_events.EventField.fromPath("$")
+          })
+        })
+      ],
       eventPattern: {
         source: ["stockwatch"]
       }
     });
+
+    const symbolsEventsDispatcherPath = join(
+      __dirname,
+      "../../src/functions/symbols_event_dispatcher"
+    );
+    const symbolsEventsDispatcherFunction = new LambdaGo.GoFunction(
+      this,
+      "SymbolsEventsDispatcherFunction",
+      {
+        entry: symbolsEventsDispatcherPath
+      }
+    );
+    symbolsEventsDispatcherFunction.addEventSource(
+      new aws_lambda_event_sources.SqsEventSource(
+        symbolsPriceEventsDispatchQueue,
+        {
+          batchSize: 1,
+          enabled: true
+        }
+      )
+    );
   }
 }
 
