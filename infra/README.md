@@ -60,6 +60,12 @@ https://finnhub.io/
   - See [this issue](https://github.com/aws/aws-cdk/issues/12456) for more details
 
 - The new _event source mappings_ filtering capabilities are not supported in L2 Lambda CDK constructs.
+
   - You either have to use the `CfnEventSourceMapping` or [add a manual override as per this blog post](https://medium.com/@philipzeh/event-filtering-for-lambda-functions-using-aws-cdk-d332140590f8).
   - The filtering capabilities are neat! And the supported syntax is the same as _EventBridge_.
   - You can learn a bit more about the technology behind the filtering by reading [this blog post](https://www.tbray.org/ongoing/When/202x/2021/12/03/Filtering-Lessons).
+
+- The _EventBridge_ `PutEvents` API is a bit awkward to use with the `ReportBatchItemFailures` setting.
+  - The response from `PutEvents` contains the `EventID` attribute but this ID is the internal _EventBridge_ event ID, not the ID of the event you are reading from the source.
+  - To monitor / reply failed events you can either use _DLQ_ (custom bus required) or rely on a metric that _EventBridge_ updates.
+  - Note that **the _DLQ_ is set in the context of a rule, not in the context of a bus**. This means that if the `PutEvents` call fails, you need to handle it separately from the events that are pushed to the _DLQ_.

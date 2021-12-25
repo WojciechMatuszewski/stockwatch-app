@@ -1,14 +1,21 @@
 import * as LambdaGo from "@aws-cdk/aws-lambda-go-alpha";
 import {
+  Aws,
   aws_apigateway,
   aws_dynamodb,
   aws_events,
+  aws_events_targets,
+  aws_iam,
   aws_lambda,
+  aws_logs,
+  aws_ssm,
   aws_stepfunctions,
   aws_stepfunctions_tasks,
   CfnOutput,
   CustomResource,
   custom_resources,
+  Duration,
+  RemovalPolicy,
   Stack,
   StackProps
 } from "aws-cdk-lib";
@@ -20,19 +27,23 @@ export class StockWatchAppStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
+    const symbolDataFetcher = new SymbolDataFetcher(this, "SymbolDataFetcher");
     const dataTable = new DataTable(this, "DataTable");
+
     new SymbolsRegistry(this, "SymbolsRegistry", {
       dataTable: dataTable.table
     });
 
-    const symbolDataFetcher = new SymbolDataFetcher(this, "SymbolDataFetcher");
-
-    new SymbolsOrchestrator(this, "SymbolsOrchestrator", {
+    new SymbolsPriceOrchestrator(this, "SymbolsOrchestrator", {
       dataTable: dataTable.table,
       symbolDataFetcher: symbolDataFetcher.api
     });
 
     new SymbolsPriceDeltaSetter(this, "SymbolsPriceDeltaSetter", {
+      dataTable: dataTable.table
+    });
+
+    new SymbolsPriceEventSender(this, "SymbolsPriceEventSender", {
       dataTable: dataTable.table
     });
 
@@ -42,14 +53,44 @@ export class StockWatchAppStack extends Stack {
   }
 }
 
-interface SymbolsOrchestratorProps {
+interface SymbolsPriceOrchestratorProps {
   dataTable: aws_dynamodb.ITable;
   symbolDataFetcher: aws_apigateway.RestApi;
 }
 
-class SymbolsOrchestrator extends Construct {
-  constructor(scope: Construct, id: string, props: SymbolsOrchestratorProps) {
+class SymbolsPriceOrchestrator extends Construct {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: SymbolsPriceOrchestratorProps
+  ) {
     super(scope, id);
+
+    const symbolsAPIKeyParameter = new aws_ssm.StringParameter(
+      this,
+      "SymbolsAPIKeyParameter",
+      {
+        stringValue: "TO_BE_REPLACED_WITH_YOUR_API_KEY",
+        description: "finnhub.io API key"
+      }
+    );
+
+    const fetchSymbolsAPIKeyTask = new aws_stepfunctions_tasks.CallAwsService(
+      this,
+      "FetchSymbolsAPIKeyTask",
+      {
+        service: "ssm",
+        action: "getParameter",
+        parameters: {
+          Name: symbolsAPIKeyParameter.parameterName
+        },
+        iamResources: [symbolsAPIKeyParameter.parameterArn],
+        resultSelector: {
+          "APIKey.$": "$.Parameter.Value"
+        },
+        resultPath: "$"
+      }
+    );
 
     const fetchSymbolsTask = new aws_stepfunctions_tasks.CallAwsService(
       this,
@@ -72,6 +113,7 @@ class SymbolsOrchestrator extends Construct {
         resultSelector: {
           "symbols.$": "$.Items"
         },
+        resultPath: "$",
         iamResources: [props.dataTable.tableArn]
       }
     );
@@ -87,6 +129,19 @@ class SymbolsOrchestrator extends Construct {
       resultPath: "$.symbols"
     }).iterator(symbolMapper);
 
+    const fetchAPIKeyAndSymbols = new aws_stepfunctions.Parallel(
+      this,
+      "FetchAPIKeyAndSymbols",
+      {
+        resultSelector: {
+          "APIKey.$": "$[0].APIKey",
+          "symbols.$": "$[1].symbols"
+        }
+      }
+    )
+      .branch(fetchSymbolsAPIKeyTask)
+      .branch(fetchSymbolsTask.next(mapSymbols));
+
     const fetchPriceForSymbolTask =
       new aws_stepfunctions_tasks.CallApiGatewayRestApiEndpoint(
         this,
@@ -97,13 +152,14 @@ class SymbolsOrchestrator extends Construct {
           method: aws_stepfunctions_tasks.HttpMethod.GET,
           queryParameters: aws_stepfunctions.TaskInput.fromObject({
             "symbol.$":
-              "States.StringToJson(States.Format('[\"{}\"]', $.symbol))",
-            token: ["c6uv32aad3i9k7i70shg"]
+              "States.StringToJson(States.Format('[\"{}\"]', $.symbolItem.symbol))",
+            "token.$":
+              "States.StringToJson(States.Format('[\"{}\"]', $.APIKey))"
           }),
           resultSelector: {
             "price.$": "$.ResponseBody.c[(@.length - 1)]"
           },
-          resultPath: "$.price"
+          resultPath: "$.symbolItem.price"
         }
       );
 
@@ -112,6 +168,10 @@ class SymbolsOrchestrator extends Construct {
       "FetchPriceForSymbolMapper",
       {
         itemsPath: "$.symbols",
+        parameters: {
+          "symbolItem.$": "$$.Map.Item.Value",
+          "APIKey.$": "$.APIKey"
+        },
         maxConcurrency: 1
       }
     ).iterator(fetchPriceForSymbolTask);
@@ -124,7 +184,7 @@ class SymbolsOrchestrator extends Construct {
         item: {
           PK: aws_stepfunctions_tasks.DynamoAttributeValue.fromString("PRICE"),
           SK: aws_stepfunctions_tasks.DynamoAttributeValue.fromString(
-            aws_stepfunctions.JsonPath.stringAt("$.symbol")
+            aws_stepfunctions.JsonPath.stringAt("$.symbolItem.symbol")
           ),
           /**
            * How does DynamoDB store numbers? Should we use string here?
@@ -133,7 +193,7 @@ class SymbolsOrchestrator extends Construct {
            */
           Price: aws_stepfunctions_tasks.DynamoAttributeValue.numberFromString(
             aws_stepfunctions.JsonPath.stringAt(
-              "States.Format('{}', $.price.price)"
+              "States.Format('{}', $.symbolItem.price.price)"
             )
           )
         }
@@ -143,13 +203,22 @@ class SymbolsOrchestrator extends Construct {
       itemsPath: "$"
     }).iterator(savePriceTask);
 
-    const machineDefinition = fetchSymbolsTask
-      .next(mapSymbols)
+    const machineDefinition = fetchAPIKeyAndSymbols
       .next(mapToSymbolPrices)
       .next(savePrices);
 
     const machine = new aws_stepfunctions.StateMachine(this, "Machine", {
       definition: machineDefinition
+    });
+
+    new aws_events.Rule(this, "Rule", {
+      enabled: false,
+      schedule: aws_events.Schedule.rate(Duration.minutes(1)),
+      targets: [
+        new aws_events_targets.SfnStateMachine(machine, {
+          retryAttempts: 0
+        })
+      ]
     });
   }
 }
@@ -183,8 +252,7 @@ class SymbolDataFetcher extends Construct {
           },
           connectionType: aws_apigateway.ConnectionType.INTERNET,
           /*
-           * These have to be hardcoded.
-           * There is no way to get the statusCode via VTL.
+           * These have to be hardcoded. There is no way to get the statusCode via VTL.
            * If we could do that, one might override the statusCode using this guide: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-override-request-response-parameters.html
            */
           integrationResponses: [
@@ -279,24 +347,24 @@ class SymbolsPriceDeltaSetter extends Construct {
   }
 }
 
-interface SymbolsPriceDeltaEventSenderProps {
+interface SymbolsPriceEventSenderProps {
   dataTable: ITable;
 }
-class SymbolsPriceDeltaEventSender extends Construct {
+class SymbolsPriceEventSender extends Construct {
   constructor(
     scope: Construct,
     id: string,
-    props: SymbolsPriceDeltaEventSenderProps
+    props: SymbolsPriceEventSenderProps
   ) {
     super(scope, id);
 
     const functionEntry = join(
       __dirname,
-      "../../src/functions/symbols_price_delta_event_sender"
+      "../../src/functions/symbols_price_event_sender"
     );
     const symbolsPriceDeltaEventSenderFunction = new LambdaGo.GoFunction(
       this,
-      "SymbolsPriceDeltaEventSenderFunction",
+      "SymbolsPriceEventSenderFunction",
       {
         entry: functionEntry,
         environment: {
@@ -304,11 +372,20 @@ class SymbolsPriceDeltaEventSender extends Construct {
         }
       }
     );
+    symbolsPriceDeltaEventSenderFunction.addToRolePolicy(
+      new aws_iam.PolicyStatement({
+        actions: ["events:PutEvents"],
+        resources: [
+          `arn:aws:events:${Aws.REGION}:${Aws.ACCOUNT_ID}:event-bus/default`
+        ],
+        effect: aws_iam.Effect.ALLOW
+      })
+    );
     props.dataTable.grantStreamRead(symbolsPriceDeltaEventSenderFunction);
 
     const ESM = new aws_lambda.CfnEventSourceMapping(
       this,
-      "SymbolsPriceDeltaEventSenderEventSourceMapping",
+      "SymbolsPriceEventSenderEventSourceMapping",
       {
         functionName: symbolsPriceDeltaEventSenderFunction.functionName,
         eventSourceArn: props.dataTable.tableStreamArn,
@@ -317,16 +394,37 @@ class SymbolsPriceDeltaEventSender extends Construct {
           Filters: [
             {
               Pattern:
-                '{"eventName": ["MODIFY", "INSERT"],"dynamodb": {"NewImage": {"PK": {"S": ["DELTA"]}}}}'
+                '{"eventName": ["MODIFY"],"dynamodb": {"NewImage": {"PK": {"S": ["DELTA", "PRICE"]}}}}'
             }
           ]
         },
         maximumRetryAttempts: 1,
+        /**
+         * For simplicity sake, the batchSize is limited to 10.
+         * The EventBridge `PutEvents` API has a limit of 10 events per API call.
+         */
         batchSize: 10,
         functionResponseTypes: ["ReportBatchItemFailures"],
         maximumBatchingWindowInSeconds: 5
       }
     );
+
+    const logGroupTarget = new aws_logs.LogGroup(
+      this,
+      "SymbolsPriceEventDestinationLogGroup",
+      {
+        retention: aws_logs.RetentionDays.ONE_DAY,
+        removalPolicy: RemovalPolicy.DESTROY
+      }
+    );
+    new aws_events.Rule(this, "SymbolsPriceEventRule", {
+      enabled: true,
+      ruleName: "AllEvents",
+      targets: [new aws_events_targets.CloudWatchLogGroup(logGroupTarget)],
+      eventPattern: {
+        source: ["stockwatch"]
+      }
+    });
   }
 }
 
