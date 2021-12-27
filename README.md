@@ -85,6 +85,8 @@ Instead of watching stock prices, this architecture looks at the _BINANCE:BTCUSD
 
   - If you use `resultSelector` and `resultPath`, you will end up with a nested object passed to your next state.
 
+  - One could use _Pass_ state just after the _Task_ to format the results
+
 - The `DynamoAttributeValue.fromNumber` in _StepFunctions_ is **broken**!
 
   - See [this issue](https://github.com/aws/aws-cdk/issues/12456) for more details
