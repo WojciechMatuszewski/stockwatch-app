@@ -81,7 +81,7 @@ Instead of watching stock prices, this architecture looks at the _BINANCE:BTCUSD
   "symbol.$": "States.StringToJson(States.Format('[\"{}\"]', $.symbols[0].SK.S))"
   ```
 
-- The _APIGW StepFunctions optimized_ integration **does not support the `parameters` (_StepFunctions_) property**. This makes it hard to format the results correctly.
+- The _APIGW StepFunctions optimized_ integration **does not support the `parameters` (Like in `Pass` state) property**. This makes it hard to format the results correctly.
 
   - If you use `resultSelector` and `resultPath`, you will end up with a nested object passed to your next state.
 
