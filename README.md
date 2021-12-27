@@ -26,7 +26,7 @@ Instead of watching stock prices, this architecture looks at the _BINANCE:BTCUSD
 
 4. Amend the value of the `SymbolsAPIKeyParameter` _SSM_ parameter. Use the APIKey from [https://finnhub.io/](https://finnhub.io/).
 
-5. Either manually execute the `SymbolsPriceOrchestrator` state machine, or enable the _EventBridge_ scheduled rule.
+5. Either manually execute the `SymbolsPriceOrchestrator` state machine couple of times (with 1 minute interval), or enable the _EventBridge_ scheduled rule.
 
 6. You might want to change the test _SNS_ subscription in `SymbolsEventDispatcher`.
 
@@ -79,7 +79,6 @@ Instead of watching stock prices, this architecture looks at the _BINANCE:BTCUSD
 
   ```text
   "symbol.$": "States.StringToJson(States.Format('[\"{}\"]', $.symbols[0].SK.S))"
-
   ```
 
 - The _APIGW StepFunctions optimized_ integration **does not support the `parameters` (_StepFunctions_) property**. This makes it hard to format the results correctly.
