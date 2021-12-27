@@ -26,7 +26,7 @@ Instead of watching stock prices, this architecture looks at the _BINANCE:BTCUSD
 
 4. Amend the value of the `SymbolsAPIKeyParameter` _SSM_ parameter. Use the APIKey from [https://finnhub.io/](https://finnhub.io/).
 
-5. Either manually execute the `SymbolsPriceOrchestrator` state machine couple of times (with 1 minute interval), or enable the _EventBridge_ scheduled rule.
+5. Either manually execute the `SymbolsPriceOrchestrator` state machine couple of times (with 1-minute interval), or enable the _EventBridge_ scheduled rule.
 
 6. You might want to change the test _SNS_ subscription in `SymbolsEventDispatcher`.
 
@@ -97,13 +97,13 @@ Instead of watching stock prices, this architecture looks at the _BINANCE:BTCUSD
 
   - You can learn a bit more about the technology behind the feature by reading [this blog post](https://www.tbray.org/ongoing/When/202x/2021/12/03/Filtering-Lessons).
 
-- The _EventBridge_ `PutEvents` API is a bit awkward to use with the `ReportBatchItemFailures` setting (for example in the context of _DynamoDB_).
+- The _EventBridge_ `PutEvents` API is a bit awkward to use with the `ReportBatchItemFailures` setting (for example, in the context of _DynamoDB_).
 
   - The response from `PutEvents` contains the `EventID` attribute, but this ID is the internal _EventBridge_ event ID, not the ID of the event you are reading from the source.
 
   - To monitor failed events, you can either use _DLQ_ or rely on a metric that _EventBridge_ updates.
 
-  - Note that **the _DLQ_ is set in the context of a rule, and not in the context of a bus**. This means that if the `PutEvents` call fails, you need to handle it separately from the events that are pushed to the _DLQ_.
+  - Note that **the _DLQ_ is set in the context of a rule and not in the context of a bus**. This means that if the `PutEvents` call fails, you need to handle it separately from the events that are pushed to the _DLQ_.
 
 - **The `PutRule` API call does not support adding the _target_**.
 
