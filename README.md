@@ -14,7 +14,7 @@ The architecture I've built significantly differs from the one presented in the 
 
 Instead of watching stock prices, this architecture looks at the _BINANCE:BTCUSDT_ and _BINANCE:BTCUSDT_ pairs.
 
-![Architecture](./images/architecture.jpeg)
+![Architecture](./images/_architecture.jpeg)
 
 ## Deployment
 
