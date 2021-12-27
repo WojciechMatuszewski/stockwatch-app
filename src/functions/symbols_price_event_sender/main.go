@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"stockwatchapp/symbol_event"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -80,21 +81,16 @@ func handler(ctx context.Context, event events.DynamoDBEvent) (Output, error) {
 	return Output{BatchItemFailures: []string{}}, nil
 }
 
-type priceDeltaChangeEventDetail struct {
-	Symbol string  `json:"symbol"`
-	Delta  float64 `json:"delta"`
-}
-
 func eventRecordForPriceDeltaChange(record events.DynamoDBEventRecord) (eventbridgetypes.PutEventsRequestEntry, error) {
 	delta, err := record.Change.NewImage["Delta"].Float()
 	if err != nil {
 		return eventbridgetypes.PutEventsRequestEntry{}, err
 	}
 
-	detail := priceDeltaChangeEventDetail{
-		Symbol: record.Change.Keys["SK"].String(),
-		Delta:  delta,
-	}
+	detail := symbol_event.NewPriceDeltaEvent(
+		record.Change.Keys["SK"].String(),
+		delta,
+	)
 	detailStr, err := json.Marshal(detail)
 	if err != nil {
 		return eventbridgetypes.PutEventsRequestEntry{}, err
@@ -110,21 +106,16 @@ func eventRecordForPriceDeltaChange(record events.DynamoDBEventRecord) (eventbri
 	return event, nil
 }
 
-type priceChangeEventDetail struct {
-	Symbol string  `json:"symbol"`
-	Price  float64 `json:"price"`
-}
-
 func eventRecordForPriceChange(record events.DynamoDBEventRecord) (eventbridgetypes.PutEventsRequestEntry, error) {
 	price, err := record.Change.NewImage["Price"].Float()
 	if err != nil {
 		return eventbridgetypes.PutEventsRequestEntry{}, err
 	}
 
-	detail := priceChangeEventDetail{
-		Symbol: record.Change.Keys["SK"].String(),
-		Price:  price,
-	}
+	detail := symbol_event.NewPriceEvent(
+		record.Change.Keys["SK"].String(),
+		price,
+	)
 	detailStr, err := json.Marshal(detail)
 	if err != nil {
 		return eventbridgetypes.PutEventsRequestEntry{}, err

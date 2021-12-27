@@ -36,6 +36,7 @@ func handler(ctx context.Context, event events.DynamoDBEvent) (Output, error) {
 
 	var batchItemFailures []string
 	for _, record := range event.Records {
+
 		item, err := proccessRecord(record)
 		if err != nil {
 			batchItemFailures = append(batchItemFailures, record.EventID)
@@ -64,18 +65,21 @@ func handler(ctx context.Context, event events.DynamoDBEvent) (Output, error) {
 }
 
 func proccessRecord(record events.DynamoDBEventRecord) (Item, error) {
-	oldPrice, err := record.Change.OldImage["Price"].Float()
+	oldImage := record.Change.OldImage
+	newImage := record.Change.NewImage
+
+	oldPrice, err := oldImage["Price"].Float()
 	if err != nil {
 		return Item{}, err
 	}
 
-	newPrice, err := record.Change.NewImage["Price"].Float()
+	newPrice, err := newImage["Price"].Float()
 	if err != nil {
 		return Item{}, err
 	}
 	delta := newPrice - oldPrice
 
-	symbol := record.Change.NewImage["SK"].String()
+	symbol := newImage["SK"].String()
 	item := Item{
 		PK:    "DELTA",
 		SK:    symbol,

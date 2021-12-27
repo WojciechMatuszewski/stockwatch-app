@@ -7,11 +7,8 @@ import {
   aws_events_targets,
   aws_iam,
   aws_lambda,
-  aws_lambda_event_sources,
-  aws_logs,
   aws_sns,
   aws_sns_subscriptions,
-  aws_sqs,
   aws_ssm,
   aws_stepfunctions,
   aws_stepfunctions_tasks,
@@ -19,7 +16,6 @@ import {
   CustomResource,
   custom_resources,
   Duration,
-  RemovalPolicy,
   Stack,
   StackProps
 } from "aws-cdk-lib";
@@ -50,6 +46,8 @@ export class StockWatchAppStack extends Stack {
     new SymbolsPriceEventSender(this, "SymbolsPriceEventSender", {
       dataTable: dataTable.table
     });
+
+    new SymbolsEventDispatcher(this, "SymbolsEventDispatcher");
 
     new CfnOutput(this, "SymbolDataFetcherURL", {
       value: symbolDataFetcher.api.url
@@ -306,11 +304,11 @@ class SymbolsPriceDeltaSetter extends Construct {
 
     const functionEntry = join(
       __dirname,
-      "../../src/functions/symbols_price_delta"
+      "../../src/functions/symbols_price_delta_calculator"
     );
-    const symbolsPriceDeltaFunction = new LambdaGo.GoFunction(
+    const symbolsPriceDeltaCalculatorFunction = new LambdaGo.GoFunction(
       this,
-      "SymbolsPriceDeltaFunction",
+      "DeltaCalculatorFunction",
       {
         entry: functionEntry,
         environment: {
@@ -318,21 +316,21 @@ class SymbolsPriceDeltaSetter extends Construct {
         }
       }
     );
-    props.dataTable.grantWriteData(symbolsPriceDeltaFunction);
-    props.dataTable.grantStreamRead(symbolsPriceDeltaFunction);
+    props.dataTable.grantWriteData(symbolsPriceDeltaCalculatorFunction);
+    props.dataTable.grantStreamRead(symbolsPriceDeltaCalculatorFunction);
 
     const ESM = new aws_lambda.CfnEventSourceMapping(
       this,
-      "SymbolsPriceDeltaEventSourceMapping",
+      "DeltaCalculatorEventSourceMapping",
       {
-        functionName: symbolsPriceDeltaFunction.functionName,
+        functionName: symbolsPriceDeltaCalculatorFunction.functionName,
         eventSourceArn: props.dataTable.tableStreamArn,
         startingPosition: "LATEST",
         filterCriteria: {
           Filters: [
             {
               Pattern:
-                '{"eventName": ["MODIFY", "INSERT"],"dynamodb": {"NewImage": {"PK": {"S": ["PRICE"]}}}}'
+                '{"eventName": ["MODIFY", "INSERT"], "dynamodb": {"OldImage": {"PK": {"S": ["PRICE"]}}, "NewImage": {"PK": {"S": ["PRICE"]}}}}'
             }
           ]
         },
@@ -362,7 +360,7 @@ class SymbolsPriceEventSender extends Construct {
     );
     const symbolsPriceDeltaEventSenderFunction = new LambdaGo.GoFunction(
       this,
-      "SymbolsPriceEventSenderFunction",
+      "EventSenderFunction",
       {
         entry: symbolsPriceDeltaEventSenderFunctionPath,
         environment: {
@@ -383,7 +381,7 @@ class SymbolsPriceEventSender extends Construct {
 
     const ESM = new aws_lambda.CfnEventSourceMapping(
       this,
-      "SymbolsPriceEventSenderEventSourceMapping",
+      "EventSenderEventSourceMapping",
       {
         functionName: symbolsPriceDeltaEventSenderFunction.functionName,
         eventSourceArn: props.dataTable.tableStreamArn,
@@ -392,7 +390,7 @@ class SymbolsPriceEventSender extends Construct {
           Filters: [
             {
               Pattern:
-                '{"eventName": ["MODIFY"],"dynamodb": {"NewImage": {"PK": {"S": ["DELTA", "PRICE"]}}}}'
+                '{"eventName": ["MODIFY", "INSERT"],"dynamodb": {"NewImage": {"PK": {"S": ["DELTA", "PRICE"]}}}}'
             }
           ]
         },
@@ -406,47 +404,63 @@ class SymbolsPriceEventSender extends Construct {
         maximumBatchingWindowInSeconds: 5
       }
     );
+  }
+}
 
-    const symbolsPriceEventsDispatchQueue = new aws_sqs.Queue(
+class SymbolsEventDispatcher extends Construct {
+  constructor(scope: Construct, id: string) {
+    super(scope, id);
+
+    const symbolsEventDispatcherTopic = new aws_sns.Topic(
       this,
-      "SymbolsPriceEventsDispatchQueue"
+      "DispatcherTopic"
     );
 
-    new aws_events.Rule(this, "SymbolsPriceEventsRule", {
-      // Does not work, the rule name has to adhere to a pattern
-      ruleName: "wm.matuszewski@gmail.com",
-      targets: [
-        new aws_events_targets.SqsQueue(symbolsPriceEventsDispatchQueue, {
-          message: aws_events.RuleTargetInput.fromObject({
-            email: aws_events.EventField.fromPath("aws.events.rule-name"),
-            event: aws_events.EventField.fromPath("$")
-          })
-        })
-      ],
-      eventPattern: {
-        source: ["stockwatch"]
-      }
-    });
-
-    const symbolsEventsDispatcherPath = join(
+    /**
+     * It would be ideal to go from EventBridge to SNS, but the EventBridge API does not support setting the "MessageAttributes" property.
+     * We need the "MessageAttribute" properties to carry out the filtering for a given subscription.
+     */
+    const symbolsEventDispatcherFunctionPath = join(
       __dirname,
       "../../src/functions/symbols_event_dispatcher"
     );
-    const symbolsEventsDispatcherFunction = new LambdaGo.GoFunction(
+    const symbolsEventDispatcherFunction = new LambdaGo.GoFunction(
       this,
-      "SymbolsEventsDispatcherFunction",
+      "DispatcherFunction",
       {
-        entry: symbolsEventsDispatcherPath
+        entry: symbolsEventDispatcherFunctionPath,
+        environment: {
+          TOPIC_ARN: symbolsEventDispatcherTopic.topicArn
+        }
       }
     );
-    symbolsEventsDispatcherFunction.addEventSource(
-      new aws_lambda_event_sources.SqsEventSource(
-        symbolsPriceEventsDispatchQueue,
-        {
-          batchSize: 1,
-          enabled: true
+    symbolsEventDispatcherTopic.grantPublish(symbolsEventDispatcherFunction);
+
+    new aws_events.Rule(this, "BusRule", {
+      enabled: true,
+      eventPattern: {
+        source: ["stockwatch"],
+        detailType: ["SymbolPriceEvent", "SymbolPriceDeltaEvent"]
+      },
+      targets: [
+        new aws_events_targets.LambdaFunction(symbolsEventDispatcherFunction)
+      ]
+    });
+
+    /**
+     * Uncomment to test the subscriptions.
+     * Each user would be allowed to create N subscriptions with filters.
+     *
+     * To allow users modify their subscriptions, one might keep track of the subscriptions in the database.
+     */
+    symbolsEventDispatcherTopic.addSubscription(
+      new aws_sns_subscriptions.EmailSubscription("alex.hy@alldotted.com", {
+        filterPolicy: {
+          price_delta: aws_sns.SubscriptionFilter.numericFilter({
+            greaterThan: 1
+          })
         }
-      )
+      })
     );
   }
 }
